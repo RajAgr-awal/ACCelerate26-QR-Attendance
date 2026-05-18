@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>QR Scanner Demo</title>
+<style>
+.scanner-wrap { max-width: 580px; margin: 0 auto; padding: 1.5rem; font-family: sans-serif; }
+.scanner-wrap h2 { font-size: 20px; margin-bottom: 1rem; }
+.day-selector { display: flex; gap: 8px; margin-bottom: 1.25rem; }
+.day-btn { padding: 8px 20px; border: 1.5px solid #ccc; border-radius: 20px; background: #fff; cursor: pointer; font-size: 13px; font-weight: 600; }
+.day-btn.active { background: #1D9E75; color: #fff; border-color: #1D9E75; }
+.scan-box { background: #f5f5f7; border-radius: 12px; padding: 1.25rem; margin-bottom: 1rem; }
+#token-input { width: 100%; padding: 10px 14px; font-size: 14px; border: 1.5px solid #ddd; border-radius: 8px; margin-bottom: 10px; font-family: monospace; box-sizing: border-box; }
+.scan-actions { display: flex; gap: 8px; }
+.btn-in { flex: 1; padding: 12px; background: #1D9E75; color: #fff; border: none; border-radius: 8px; font-size: 14px; font-weight: 700; cursor: pointer; }
+.btn-out { flex: 1; padding: 12px; background: #D85A30; color: #fff; border: none; border-radius: 8px; font-size: 14px; font-weight: 700; cursor: pointer; }
+.scan-result { padding: 14px 16px; border-radius: 10px; font-size: 14px; line-height: 1.6; margin-bottom: 1rem; }
+.scan-result.success { background: #E1F5EE; color: #0F6E56; border: 1px solid #A8DFC9; }
+.scan-result.error { background: #FCEBEB; color: #A32D2D; border: 1px solid #F5B8B8; }
+.scan-result.loading { background: #f0f0f0; color: #555; }
+.action-label { font-weight: 700; }
+.recent-wrap h3 { font-size: 14px; margin-bottom: .75rem; color: #444; }
+#recent-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+#recent-table th { text-align: left; padding: 6px 10px; border-bottom: 2px solid #eee; color: #888; font-size: 11px; text-transform: uppercase; }
+#recent-table td { padding: 8px 10px; border-bottom: 1px solid #f0f0f0; }
+td.in { color: #1D9E75; font-weight: 700; }
+td.out { color: #D85A30; font-weight: 700; }
+</style>
+</head>
+<body>
+
+<div id="scanner-page" class="page">
+  <div class="scanner-wrap">
+    <h2>QR Scanner</h2>
+
+    <div class="day-selector">
+      <button class="day-btn active" onclick="setDay(1)">Day 1</button>
+      <button class="day-btn" onclick="setDay(2)">Day 2</button>
+      <button class="day-btn" onclick="setDay(3)">Day 3</button>
+    </div>
+
+    <div class="scan-box">
+      <input type="text" id="token-input" placeholder="Enter or scan QR token (ACC26-TOKEN-XXXXX)" autocomplete="off" />
+      <div class="scan-actions">
+        <button class="btn-in" onclick="handleScan('IN')">✓ CHECK IN</button>
+        <button class="btn-out" onclick="handleScan('OUT')">✗ CHECK OUT</button>
+      </div>
+    </div>
+
+    <div id="scan-result" class="scan-result" style="display:none"></div>
+
+    <div class="recent-wrap">
+      <h3>Recent scans — Day <span id="current-day-label">1</span></h3>
+      <table id="recent-table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Action</th>
+            <th>Time</th>
+          </tr>
+        </thead>
+        <tbody id="recent-body"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+// Inline api.js content to avoid CORS on file:///
+const SUPABASE_URL = 'https://ionwyohuqszattwbrskr.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imlvbnd5b2h1cXN6YXR0d2Jyc2tyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwMjE0MTYsImV4cCI6MjA5NDU5NzQxNn0.ksIBk0gJJHpLVAf_GJ15Y3fL2Fj-8K7-tJQZYWgNViM';
+const headers = {
+  'Content-Type': 'application/json',
+  'apikey': SUPABASE_KEY,
+  'Authorization': `Bearer ${SUPABASE_KEY}`,
+  'Prefer': 'return=representation'
+};
+
+async function getParticipantByToken(token) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/participants?qr_token=eq.${token}&is_active=eq.true&select=*`, { headers });
+  const data = await res.json();
+  if (!data.length) return { success: false, error: 'Participant not found' };
+  return { success: true, data: data[0] };
+}
+
+async function checkIn(participantId, eventDay) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/attendance_logs`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      participant_id: participantId,
+      event_day: eventDay,
+      action: 'CHECK_IN',
+      scan_time: new Date().toISOString()
+    })
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    if (err.code === '23505') return { success: false, error: 'Already checked in today' };
+    return { success: false, error: JSON.stringify(err) };
+  }
+  const data = await res.json();
+  return { success: true, data };
+}
+
+async function checkOut(participantId, eventDay) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/attendance_logs`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      participant_id: participantId,
+      event_day: eventDay,
+      action: 'CHECK_OUT',
+      scan_time: new Date().toISOString()
+    })
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    return { success: false, error: JSON.stringify(err) };
+  }
+  const data = await res.json();
+  return { success: true, data };
+}
+
+async function logScanAttempt(qrToken, participantId, scanResult) {
+  await fetch(`${SUPABASE_URL}/rest/v1/qr_scan_security_logs`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      qr_token: qrToken,
+      participant_id: participantId || null,
+      scan_result: scanResult
+    })
+  });
+}
+
+// ── Scanner state ──────────────────────────────────────────
+let currentDay = 1;
+
+function setDay(d) {
+  currentDay = d;
+  document.getElementById('current-day-label').textContent = d;
+  document.querySelectorAll('.day-btn').forEach((b, i) => {
+    b.classList.toggle('active', i + 1 === d);
+  });
+  loadRecentScans();
+}
+
+async function handleScan(action) {
+  const token = document.getElementById('token-input').value.trim();
+  if (!token) { showResult('error', 'Please enter a token'); return; }
+
+  showResult('loading', 'Looking up participant...');
+
+  const found = await getParticipantByToken(token);
+  if (!found.success) {
+    showResult('error', 'Invalid QR token — participant not found');
+    await logScanAttempt(token, null, 'INVALID_TOKEN');
+    return;
+  }
+
+  const p = found.data;
+  const result = action === 'IN' ? await checkIn(p.id, currentDay) : await checkOut(p.id, currentDay);
+
+  if (result.success) {
+    showResult('success', `
+      <strong>${p.full_name}</strong> — ${p.participant_code}<br>
+      ${p.college_name || ''}<br>
+      <span class="action-label">${action === 'IN' ? '✓ Checked IN' : '✗ Checked OUT'}</span>
+      · Day ${currentDay}
+    `);
+    await logScanAttempt(token, p.id, 'SUCCESS');
+    document.getElementById('token-input').value = '';
+    loadRecentScans();
+  } else {
+    showResult('error', result.error || 'Something went wrong');
+    await logScanAttempt(token, p.id, 'DUPLICATE');
+  }
+}
+
+function showResult(type, msg) {
+  const el = document.getElementById('scan-result');
+  el.style.display = 'block';
+  el.className = 'scan-result ' + type;
+  el.innerHTML = msg;
+}
+
+async function loadRecentScans() {
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/attendance_logs?event_day=eq.${currentDay}&select=*,participants(full_name,participant_code)&order=scan_time.desc&limit=10`,
+    { headers }
+  );
+  const rows = await res.json();
+  const tbody = document.getElementById('recent-body');
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="3" style="color:#888;text-align:center">No scans yet</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map(r => `
+    <tr>
+      <td>${r.participants?.full_name || '—'}</td>
+      <td class="${r.action === 'CHECK_IN' ? 'in' : 'out'}">${r.action}</td>
+      <td>${new Date(r.scan_time).toLocaleTimeString()}</td>
+    </tr>
+  `).join('');
+}
+
+document.getElementById('token-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') handleScan('IN');
+});
+
+loadRecentScans();
+</script>
+</body>
+</html>
